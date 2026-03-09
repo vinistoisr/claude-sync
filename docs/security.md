@@ -29,17 +29,22 @@ Claude Sync is designed with the following security objectives:
 
 Claude Sync uses [age](https://github.com/FiloSottile/age), a modern file encryption tool designed by Filippo Valsorda (Go security lead at Google).
 
-**Encryption Scheme:**
+**Data Pipeline:**
 ```
 ┌────────────────────────────────────────────────────────┐
-│  age Encryption                                         │
+│  1. Gzip Compression (BestSpeed)                        │
+│     - Reduces payload size 5-10x for text content      │
+│     - Backward-compatible: magic byte detection on read│
 ├────────────────────────────────────────────────────────┤
-│  1. Generate ephemeral X25519 keypair                   │
-│  2. ECDH with recipient's public key → shared secret    │
-│  3. HKDF-SHA256 → file key                             │
-│  4. ChaCha20-Poly1305 AEAD → encrypted content         │
+│  2. age Encryption                                      │
+│     a. Generate ephemeral X25519 keypair                │
+│     b. ECDH with recipient's public key → shared secret │
+│     c. HKDF-SHA256 → file key                          │
+│     d. ChaCha20-Poly1305 AEAD → encrypted content      │
 └────────────────────────────────────────────────────────┘
 ```
+
+Note: Compression before encryption is the correct order. Encrypted data has no redundancy and cannot be compressed. Compressing first also avoids leaking information through compression ratios since all data is encrypted with the same key.
 
 **Properties:**
 - **Forward Secrecy**: Ephemeral keys per file encryption

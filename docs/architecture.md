@@ -16,19 +16,21 @@ Claude Sync follows a **layered architecture** with a pluggable storage abstract
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    CLI Layer                             │
-│         cmd/claude-sync/main.go (~1500 lines)           │
+│         cmd/claude-sync/main.go (~2300 lines)           │
 │                                                          │
 │  Commands: init, push, pull, status, diff, conflicts,   │
-│            reset, update, version                        │
+│            auto, reset, update, version                  │
 │  UI: Interactive prompts (survey), progress reporting   │
+│  Auto: Claude Code hook management (settings.json)      │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
 │                   Sync Layer                             │
 │              internal/sync/                              │
 │                                                          │
-│  sync.go   - Syncer struct, push/pull orchestration     │
-│  state.go  - SyncState, FileState, change detection     │
+│  sync.go   - Syncer struct, concurrent push/pull        │
+│             (10-worker pool, gzip compression)           │
+│  state.go  - SyncState (mutex-protected), change detect │
 └────────────────────────┬────────────────────────────────┘
                          │
            ┌─────────────┴─────────────┐
@@ -54,7 +56,7 @@ Claude Sync follows a **layered architecture** with a pluggable storage abstract
 │               internal/config/                    │
 │                                                   │
 │  config.go - YAML config, path resolution         │
-│  Backward compatible with legacy R2-only format   │
+│  Exclude list, backward compat with legacy format │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -183,19 +185,24 @@ Orchestrates synchronization operations.
 type Syncer struct {
     claudeDir   string           // ~/.claude
     storage     storage.Storage  // Provider-agnostic interface
-    keyPath     string           // Path to age key
+    encryptor   *crypto.Encryptor
     state       *SyncState
-    statePath   string           // ~/.claude-sync/state.json
+    cfg         *config.Config   // For exclude list access
     quiet       bool
-    progressFn  func(ProgressEvent)
+    onProgress  ProgressFunc
 }
 ```
 
 **Key Methods:**
-- `Push(ctx)` - Detect changes, encrypt, upload
-- `Pull(ctx)` - Fetch remote state, download, decrypt
+- `Push(ctx)` - Detect changes, compress, encrypt, upload (10 concurrent workers)
+- `Pull(ctx)` - Fetch remote state, download, decrypt, decompress (10 concurrent workers)
 - `Status(ctx)` - List pending local changes
 - `Diff(ctx)` - Compare local vs remote
+
+**Concurrency:**
+- Uploads and downloads use a semaphore-based worker pool (10 goroutines)
+- Deletes use `DeleteBatch` API (up to 1000 keys per call)
+- `SyncState` methods are mutex-protected for goroutine safety
 
 **state.go - State Management:**
 ```go
@@ -210,9 +217,10 @@ type FileState struct {
 type SyncState struct {
     Files    map[string]*FileState
     LastSync time.Time
-    DeviceID string    // Hostname
+    DeviceID string       // Hostname
     LastPush time.Time
     LastPull time.Time
+    mu       sync.Mutex   // Protects concurrent access
 }
 ```
 
@@ -246,8 +254,15 @@ type Config struct {
     SecretAccessKey string `yaml:"secret_access_key,omitempty"`
     Bucket          string `yaml:"bucket,omitempty"`
 
-    EncryptionKey string `yaml:"encryption_key_path"`
+    EncryptionKey string   `yaml:"encryption_key_path"`
+    Exclude       []string `yaml:"exclude,omitempty"`
 }
+```
+
+**Exclude Matching:**
+```go
+// Supports glob patterns, prefix matching, and exact matches
+func (c *Config) IsExcluded(relPath string) bool
 ```
 
 **Sync Paths:**
@@ -277,24 +292,24 @@ Local Files (~/.claude/)
         ▼
 ┌───────────────────┐
 │  Change Detection │  Compare with SyncState (hash, modtime)
-│                   │  Result: add/modify/delete lists
+│  (exclude filter) │  Skip excluded paths, result: add/modify/delete
 └────────┬──────────┘
          │
          ▼
 ┌───────────────────┐
-│  Read & Encrypt   │  For each changed file:
-│  (age encryption) │  Read → Encrypt → Bytes
+│  Read, Compress   │  For each changed file (10 concurrent workers):
+│  & Encrypt        │  Read → Gzip → age Encrypt → Bytes
 └────────┬──────────┘
          │
          ▼
 ┌───────────────────┐
 │  Upload via       │  storage.Upload(key, data)
-│  Storage Interface│  Provider handles specifics
+│  Storage Interface│  Deletes use DeleteBatch (up to 1000/call)
 └────────┬──────────┘
          │
          ▼
 ┌───────────────────┐
-│  Update State     │  Record hash, size, upload time
+│  Update State     │  Record hash, size, upload time (mutex-protected)
 │  (state.json)     │  Persist to ~/.claude-sync/state.json
 └───────────────────┘
 ```
@@ -307,7 +322,7 @@ Cloud Storage (via Storage interface)
         ▼
 ┌───────────────────┐
 │  List Objects     │  storage.List("")
-│                   │  Compare with local state
+│  (exclude filter) │  Skip excluded paths, compare with local state
 └────────┬──────────┘
          │
          ▼
@@ -318,13 +333,13 @@ Cloud Storage (via Storage interface)
          │
          ▼
 ┌───────────────────┐
-│  Download &       │  storage.Download(key) → Decrypt → Write
-│  Decrypt          │
+│  Download, Decrypt│  10 concurrent workers:
+│  & Decompress     │  Download → Decrypt → Gunzip (if compressed) → Write
 └────────┬──────────┘
          │
          ▼
 ┌───────────────────┐
-│  Update State     │  Record new hash, pull time
+│  Update State     │  Record new hash, pull time (mutex-protected)
 └───────────────────┘
 ```
 
@@ -365,6 +380,9 @@ storage:
   region: us-east-1      # S3 only
   project_id: my-project # GCS only
 encryption_key_path: ~/.claude-sync/age-key.txt
+exclude:
+  - plugins/marketplaces # skip plugin registry caches
+  - plugins/cache        # skip resolved plugin versions
 ```
 
 ### Config File Format (Legacy)
@@ -407,6 +425,21 @@ encryption_key_path: ~/.claude-sync/age-key.txt
 - Memory-hard: resistant to GPU/ASIC attacks
 - Winner of Password Hashing Competition
 - Parameters: 64MB memory, 3 iterations, 4 threads
+
+### Why Gzip Compression?
+
+- Session logs (.jsonl) are repetitive JSON text that compresses 5-10x
+- Reduces transfer sizes significantly, making uploads/downloads faster
+- `gzip.BestSpeed` minimizes CPU overhead while still achieving good compression
+- Backward-compatible: decompression detects gzip magic bytes (0x1f 0x8b) and handles both compressed and uncompressed data
+
+### Why Concurrent Workers?
+
+- Network I/O is the bottleneck, not CPU
+- 10-worker pool provides ~10x speedup over sequential processing
+- S3/R2 clients, age encryption, and `os.MkdirAll` are all thread-safe
+- State mutations are mutex-protected to prevent data races
+- Batch delete API reduces round-trips (up to 1000 keys per call)
 
 ### Why Hash-Based Change Detection?
 

@@ -179,10 +179,10 @@ for each path in SyncPaths {
 └─────────────────────────────────────┘
 ```
 
-### Phase 2: Upload
+### Phase 2: Upload (10 Concurrent Workers)
 
 ```
-For each file to upload:
+For each file to upload (via worker pool):
 ┌─────────────────────────────────────┐
 │  Read local file                     │
 │  path: ~/.claude/projects/foo/x.json │
@@ -190,10 +190,17 @@ For each file to upload:
                 │
                 ▼
 ┌─────────────────────────────────────┐
+│  Compress with gzip                  │
+│  - BestSpeed level for fast compress│
+│  - 5-10x reduction for JSON/text   │
+└─────────────────────────────────────┘
+                │
+                ▼
+┌─────────────────────────────────────┐
 │  Encrypt with age                    │
 │  - Read identity from age-key.txt   │
 │  - Extract recipient (public key)   │
-│  - Encrypt content                  │
+│  - Encrypt compressed content       │
 └─────────────────────────────────────┘
                 │
                 ▼
@@ -206,6 +213,8 @@ For each file to upload:
 │  - S3: S3 PutObject to AWS          │
 │  - GCS: Objects.Insert              │
 └─────────────────────────────────────┘
+
+Deletes use DeleteBatch API (up to 1000 per call)
 ```
 
 ### Phase 3: Progress Reporting
@@ -311,7 +320,7 @@ When both local and remote have changed:
 └─────────────────────────────────────┘
 ```
 
-### Phase 4: Download & Decrypt
+### Phase 4: Download, Decrypt & Decompress (10 Concurrent Workers)
 
 For non-conflict files:
 
@@ -325,7 +334,16 @@ For non-conflict files:
 ┌─────────────────────────────────────┐
 │  Decrypt with age                    │
 │  - Read identity from age-key.txt   │
-│  - Decrypt bytes → plaintext        │
+│  - Decrypt bytes → compressed data  │
+└─────────────────────────────────────┘
+                │
+                ▼
+┌─────────────────────────────────────┐
+│  Decompress (if gzipped)             │
+│  - Detect gzip magic bytes (1f 8b) │
+│  - Gunzip if compressed             │
+│  - Pass through if not (backward    │
+│    compatible with older versions)  │
 └─────────────────────────────────────┘
                 │
                 ▼
@@ -518,25 +536,55 @@ Restart claude-sync to use the new version
 
 ---
 
-## Shell Integration
+## Auto-Sync via Claude Code Hooks
 
-For automatic syncing, add to your shell profile:
+The recommended way to keep devices in sync is `claude-sync auto`:
+
+```bash
+claude-sync auto enable
+```
+
+This installs hooks into `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "claude-sync-auto",
+      "hooks": [{"type": "command", "command": "claude-sync pull"}]
+    }],
+    "Stop": [{
+      "matcher": "claude-sync-auto",
+      "hooks": [{"type": "command", "command": "claude-sync push"}]
+    }]
+  }
+}
+```
+
+**How it works:**
+- **SessionStart** fires before the Claude Code session becomes interactive, so `pull` completes before you start working
+- **Stop** fires when the session ends, pushing your changes to cloud
+
+**Management:**
+```bash
+claude-sync auto enable    # Install hooks
+claude-sync auto disable   # Remove hooks (preserves other hooks/settings)
+claude-sync auto status    # Check if enabled
+```
+
+Hooks are tagged with `matcher: "claude-sync-auto"` so `disable` only removes claude-sync hooks without touching anything else in settings.json.
+
+### Legacy: Shell Integration
+
+If you prefer shell-level sync instead of Claude Code hooks:
 
 ```bash
 # ~/.zshrc or ~/.bashrc
-
-# Auto-pull on shell start (background, quiet)
 if command -v claude-sync &> /dev/null; then
   claude-sync pull -q &
 fi
-
-# Auto-push on shell exit (quiet)
 trap 'claude-sync push -q' EXIT
 ```
-
-This ensures:
-- Fresh sessions are pulled when you start a terminal
-- Local changes are pushed when you close a terminal
 
 ---
 

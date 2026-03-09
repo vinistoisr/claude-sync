@@ -31,9 +31,13 @@ Claude Sync provides:
 
 | Feature | Description |
 |---------|-------------|
-| **End-to-end encryption** | Files encrypted with [age](https://github.com/FiloSottile/age) before upload |
+| **Auto-sync** | Automatically pull on session start, push on end via Claude Code hooks |
+| **Fast transfers** | 10 concurrent workers with gzip compression (5-10x smaller uploads) |
+| **End-to-end encryption** | Files compressed and encrypted with [age](https://github.com/FiloSottile/age) before upload |
 | **Passphrase-based keys** | Same passphrase = same key on any device (no file copying) |
 | **Multi-cloud storage** | Cloudflare R2, Amazon S3, or Google Cloud Storage |
+| **Configurable excludes** | Skip plugin caches and other large directories from sync |
+| **Cross-platform** | Windows, macOS, and Linux binaries |
 | **Interactive wizard** | Arrow-key driven setup with validation |
 | **Conflict detection** | Automatic detection and resolution of concurrent edits |
 | **Self-updating** | Built-in version management |
@@ -117,7 +121,12 @@ curl -L https://github.com/tawanorg/claude-sync/releases/latest/download/claude-
 
 # Linux ARM64
 curl -L https://github.com/tawanorg/claude-sync/releases/latest/download/claude-sync-linux-arm64 -o claude-sync
+
+# Windows (download .exe from releases page)
+# https://github.com/tawanorg/claude-sync/releases/latest
 ```
+
+Available platforms: Windows (amd64/arm64), macOS (amd64/arm64), Linux (amd64/arm64).
 
 ---
 
@@ -147,6 +156,9 @@ curl -L https://github.com/tawanorg/claude-sync/releases/latest/download/claude-
 | `claude-sync status` | Show pending local changes |
 | `claude-sync diff` | Compare local and remote state |
 | `claude-sync conflicts` | List and resolve conflicts |
+| `claude-sync auto enable` | Install auto-sync hooks into Claude Code |
+| `claude-sync auto disable` | Remove auto-sync hooks |
+| `claude-sync auto status` | Show auto-sync hook status |
 | `claude-sync reset` | Reset configuration |
 | `claude-sync update` | Update to latest version |
 

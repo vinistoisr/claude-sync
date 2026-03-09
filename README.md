@@ -19,12 +19,15 @@
 ## Features
 
 - **Cross-device sync**: Continue Claude Code conversations on any laptop
+- **Auto-sync**: Automatically pull on session start, push on session end via Claude Code hooks
+- **Fast**: Concurrent uploads/downloads (10 workers) with gzip compression
 - **Multi-provider storage**: Cloudflare R2, AWS S3, or Google Cloud Storage
-- **End-to-end encryption**: All files encrypted with age before upload
+- **End-to-end encryption**: All files compressed and encrypted with age before upload
 - **Passphrase-based keys**: Same passphrase = same key on any device (no file copying)
+- **Configurable excludes**: Skip large directories (plugin caches, etc.) from sync
+- **Cross-platform**: Windows, macOS, and Linux binaries
 - **Interactive wizard**: Arrow-key driven setup with validation
 - **Self-updating**: `claude-sync update` to get the latest version
-- **Simple CLI**: `push`, `pull`, `status`, `diff`, `conflicts` commands
 
 <div align="center">
 <img src="assets/claude-sync.gif" alt="Claude Sync Demo" width="100%">
@@ -179,10 +182,27 @@ claude-sync pull        # Download remote changes from cloud storage
 claude-sync status      # Show pending local changes
 claude-sync diff        # Show differences between local and remote
 claude-sync conflicts   # List and resolve conflicts
+claude-sync auto        # Manage automatic sync via Claude Code hooks
 claude-sync reset       # Reset configuration (forgot passphrase)
 claude-sync update      # Update to latest version
 claude-sync --help      # Show all commands
 ```
+
+### Auto-Sync (Recommended)
+
+Set up Claude Code to sync automatically on every session:
+
+```bash
+claude-sync auto enable    # Install hooks (pull on start, push on end)
+claude-sync auto disable   # Remove hooks
+claude-sync auto status    # Check if enabled
+```
+
+When enabled, Claude Code will:
+- **Pull** the latest data from cloud when a session starts
+- **Push** your changes to cloud when a session ends
+
+No manual `push`/`pull` needed.
 
 ### Pull Options
 
@@ -214,19 +234,18 @@ claude-sync update --check   # Check without installing
 claude-sync update           # Download and install latest version
 ```
 
-## Shell Integration
+## Excluding Paths
 
-Add to `~/.zshrc` or `~/.bashrc`:
+Skip large or unnecessary directories from sync by adding an `exclude` list to `~/.claude-sync/config.yaml`:
 
-```bash
-# Auto-pull on shell start
-if command -v claude-sync &> /dev/null; then
-  claude-sync pull -q &
-fi
-
-# Auto-push on shell exit
-trap 'claude-sync push -q' EXIT
+```yaml
+exclude:
+  - plugins/marketplaces   # cached plugin registry clones
+  - plugins/cache          # resolved plugin versions
+  - "*.tmp"                # glob pattern support
 ```
+
+Patterns support glob matching, prefix matching, and exact matches. Excluded paths are skipped during push, pull, diff, and status operations. Excluded directories are skipped entirely (not walked), which also speeds up change detection.
 
 ## Pulling with Existing Files
 
@@ -342,9 +361,14 @@ npm install -g @tawanorg/claude-sync
 curl -L https://github.com/tawanorg/claude-sync/releases/latest/download/claude-sync-darwin-arm64 -o claude-sync
 chmod +x claude-sync
 sudo mv claude-sync /usr/local/bin/
+
+# Windows (download .exe from releases page)
+# https://github.com/tawanorg/claude-sync/releases/latest
 ```
 
-See [GitHub Releases](https://github.com/tawanorg/claude-sync/releases) for all platforms.
+Available platforms: Windows (amd64/arm64), macOS (amd64/arm64), Linux (amd64/arm64).
+
+See [GitHub Releases](https://github.com/tawanorg/claude-sync/releases) for all binaries.
 
 ### Go Install
 
